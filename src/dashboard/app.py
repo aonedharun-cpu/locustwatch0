@@ -350,6 +350,107 @@ def generate_pdf_report(selected_week, week_preds, fao_week):
     return buf.read()
 
 
+# ── Shared UI helpers ─────────────────────────────────────────────────────────
+
+def _provenance_table(model, T, q_hat, fao_all, seq_len=12):
+    prov_rows = [
+        ("Model",           "LocustNet (LSTM + Attention + GNN)"),
+        ("Parameters",      "~317K"),
+        ("Checkpoint",      CHECKPOINT.name if CHECKPOINT.exists() else "Missing"),
+        ("Features file",   FEATURES_FILE.name if FEATURES_FILE.exists() else "Not loaded (demo mode)"),
+        ("FAO records",     f"{len(fao_all):,}" if not fao_all.empty else "Missing"),
+        ("Calibration T",   f"{T:.4f}"),
+        ("Conformal q_hat", f"{q_hat:.4f}" if q_hat else "Not computed"),
+        ("Grid resolution", "0.1 deg (~11 km)"),
+        ("Temporal split",  "Train<=2017 | Val 2018-20 | Test>=2021"),
+        ("Sequence length", f"{seq_len} weeks"),
+    ]
+    for label, value in prov_rows:
+        st.markdown(f"**{label}:** {value}")
+
+
+def _figures_gallery():
+    all_figs = sorted(FIGURES_DIR.glob("fig_*.png")) if FIGURES_DIR.exists() else []
+    if not all_figs:
+        st.info("No figures found.")
+        return
+    tabs = st.tabs(["EDA (Phase 0-1)", "Baselines (Phase 2)", "Interpretability (Phase 4)"])
+    groups = [
+        [f for f in all_figs if f.stem.startswith(("fig_00", "fig_01"))],
+        [f for f in all_figs if f.stem.startswith("fig_02")],
+        [f for f in all_figs if f.stem.startswith("fig_04")],
+    ]
+    for tab, fig_files in zip(tabs, groups):
+        with tab:
+            if not fig_files:
+                st.info("No figures in this group.")
+                continue
+            cols = st.columns(3)
+            for i, fp in enumerate(fig_files):
+                cols[i % 3].image(str(fp), caption=fp.stem, use_container_width=True)
+
+
+def static_mode(model, T, q_hat, fao_all):
+    """Dashboard shown on Streamlit Cloud where the 2GB features file is absent."""
+    st.info(
+        "Running in **demo mode** -- live inference requires the full feature matrix "
+        "(2.2 GB, not stored in the repo). "
+        "All pre-computed analysis figures and model metadata are shown below."
+    )
+
+    with st.sidebar:
+        st.header("Demo Mode")
+        st.caption(
+            "To enable live inference, run the full pipeline locally and "
+            "launch: `python -m streamlit run src/dashboard/app.py`"
+        )
+        st.divider()
+        st.caption("LocustWatch AI v0.5 | Phase 5 Dashboard")
+
+    # KPI strip from conformal / calibration outputs
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Model",         "LocustNet")
+    col2.metric("Parameters",    "~317K")
+    col3.metric("Calibration T", f"{T:.3f}")
+    col4.metric("Conformal q",   f"{q_hat:.3f}" if q_hat else "N/A")
+
+    st.subheader("2019-2020 East Africa Outbreak -- Risk Maps")
+    risk_map = FIGURES_DIR / "fig_04f_risk_maps_2019_2020.png"
+    if risk_map.exists():
+        st.image(str(risk_map), use_container_width=True)
+
+    col_ts, col_fao = st.columns(2)
+    with col_ts:
+        st.subheader("Regional Risk Time Series")
+        ts_fig = FIGURES_DIR / "fig_04g_risk_timeseries.png"
+        if ts_fig.exists():
+            st.image(str(ts_fig), use_container_width=True)
+    with col_fao:
+        st.subheader("Predicted Risk vs FAO Records")
+        fao_fig = FIGURES_DIR / "fig_04h_fao_vs_predicted.png"
+        if fao_fig.exists():
+            st.image(str(fao_fig), use_container_width=True)
+
+    col_shap, col_prov = st.columns([3, 2])
+    with col_shap:
+        st.subheader("Feature Importance (SHAP)")
+        shap_fig = fig_shap_bar()
+        if shap_fig:
+            st.pyplot(shap_fig, use_container_width=True)
+            plt.close(shap_fig)
+        else:
+            shap_img = FIGURES_DIR / "fig_04a_shap_importance.png"
+            if shap_img.exists():
+                st.image(str(shap_img), use_container_width=True)
+
+    with col_prov:
+        st.subheader("Data Provenance")
+        _provenance_table(model, T, q_hat, fao_all)
+
+    with st.expander("All Analysis Figures", expanded=False):
+        _figures_gallery()
+
+
 # ── Main Streamlit app ─────────────────────────────────────────────────────────
 
 def main():
@@ -386,18 +487,15 @@ def main():
     df_all = load_features()
     fao_all = load_fao()
 
-    if model is None or df_all.empty:
-        st.error(
-            "Model checkpoint or features not found. "
-            "Run: python src/models/train.py --fast"
-        )
-        st.stop()
+    # ── Static mode: no features file (e.g. Streamlit Cloud) ─────────────────
+    if df_all.empty:
+        static_mode(model, T, q_hat, fao_all)
+        return
 
     # ── Sidebar ───────────────────────────────────────────────────────────────
     with st.sidebar:
         st.header("Controls")
 
-        # Date range filter
         min_date = df_all["week"].min().date()
         max_date = df_all["week"].max().date()
         date_range = st.date_input(
@@ -411,23 +509,17 @@ def main():
         else:
             start_d = end_d = date_range[0]
 
-        # Cell subsample (performance)
         n_cells = st.slider(
             "Max cells (for speed)",
             min_value=200, max_value=5000, value=800, step=200,
         )
-
-        # Display options
-        show_fao = st.checkbox("Show FAO records on map", value=True)
+        show_fao         = st.checkbox("Show FAO records on map", value=True)
         show_uncertainty = st.checkbox("Size circles by uncertainty", value=False)
-
-        # Risk tier filter
         min_tier = st.selectbox(
             "Minimum tier on map",
             options=["watch", "warning", "emergency"],
             index=0,
         )
-
         st.divider()
         st.caption("LocustWatch AI v0.5 | Phase 5 Dashboard")
 
@@ -438,14 +530,12 @@ def main():
             (df_all["week"] <= pd.Timestamp(end_d))
         ].copy()
 
-        # Subsample cells
         cells = df_window["cell_id"].unique()
         if len(cells) > n_cells:
             rng = np.random.default_rng(42)
             cells = rng.choice(cells, n_cells, replace=False)
             df_window = df_window[df_window["cell_id"].isin(cells)].copy()
 
-        # Extend window backward by seq_len weeks so edge windows are valid
         cutoff = pd.Timestamp(start_d) - pd.Timedelta(weeks=seq_len)
         df_ext = df_all[
             (df_all["week"] >= cutoff) &
@@ -476,14 +566,12 @@ def main():
     selected_week = available_weeks[week_idx]
     week_preds = preds[preds["week"] == selected_week].copy()
 
-    # Apply minimum tier filter
     tier_order = {"none": 0, "watch": 1, "warning": 2, "emergency": 3}
     min_val = tier_order[min_tier]
     week_preds = week_preds[
         week_preds["risk_prob"].apply(lambda p: tier_order[tier(p)] >= min_val)
     ].copy()
 
-    # FAO records within ±2 weeks of selected week
     fao_week = pd.DataFrame()
     if not fao_all.empty and show_fao:
         fao_week = fao_all[
@@ -494,33 +582,27 @@ def main():
     # ── Summary KPI strip ─────────────────────────────────────────────────────
     t_counts = week_preds["risk_prob"].apply(tier).value_counts()
     k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Cells analysed",  f"{len(week_preds):,}")
-    k2.metric("Watch",           f"{t_counts.get('watch', 0):,}",
-              delta=None, delta_color="off")
-    k3.metric("Warning",         f"{t_counts.get('warning', 0):,}")
-    k4.metric("Emergency",       f"{t_counts.get('emergency', 0):,}")
-    k5.metric("Mean risk",       f"{week_preds['risk_prob'].mean()*100:.1f}%")
-
+    k1.metric("Cells analysed", f"{len(week_preds):,}")
+    k2.metric("Watch",          f"{t_counts.get('watch', 0):,}")
+    k3.metric("Warning",        f"{t_counts.get('warning', 0):,}")
+    k4.metric("Emergency",      f"{t_counts.get('emergency', 0):,}")
+    k5.metric("Mean risk",      f"{week_preds['risk_prob'].mean()*100:.1f}%")
     st.caption(
         f"Week: **{pd.Timestamp(selected_week).date()}** | "
         f"Calibration T={T:.3f} | "
         + (f"Conformal q_hat={q_hat:.3f}" if q_hat else "No conformal threshold loaded")
     )
 
-    # ── Map ───────────────────────────────────────────────────────────────────
     with col_map:
         folium_map = build_folium_map(week_preds, fao_week, show_fao, show_uncertainty)
         st_folium(folium_map, width=None, height=480, returned_objects=[])
 
-    # ── Time series ───────────────────────────────────────────────────────────
     st.subheader("Regional Risk Time Series")
     ts_fig = fig_timeseries(preds)
     st.pyplot(ts_fig, use_container_width=True)
     plt.close(ts_fig)
 
-    # ── SHAP + provenance ─────────────────────────────────────────────────────
     col_shap, col_prov = st.columns([3, 2])
-
     with col_shap:
         st.subheader("Feature Importance (SHAP)")
         shap_fig = fig_shap_bar()
@@ -528,39 +610,15 @@ def main():
             st.pyplot(shap_fig, use_container_width=True)
             plt.close(shap_fig)
         else:
-            st.info(
-                "SHAP importance not found. "
-                "Run: python src/evaluation/shap_analysis.py"
-            )
+            st.info("Run: python src/evaluation/shap_analysis.py")
 
     with col_prov:
         st.subheader("Data Provenance")
-        prov_rows = [
-            ("Model", "LocustNet (LSTM + Attention + GNN)"),
-            ("Parameters", "~317K"),
-            ("Checkpoint", CHECKPOINT.name if CHECKPOINT.exists() else "Missing"),
-            ("Features", FEATURES_FILE.name if FEATURES_FILE.exists() else "Missing"),
-            ("FAO records", f"{len(fao_all):,}" if not fao_all.empty else "Missing"),
-            ("Calibration T", f"{T:.4f}"),
-            ("Conformal q_hat", f"{q_hat:.4f}" if q_hat else "Not computed"),
-            ("Grid resolution", "0.1 deg (~11 km)"),
-            ("Temporal split", "Train<=2017 | Val 2018-20 | Test>=2021"),
-            ("Sequence length", f"{seq_len} weeks"),
-        ]
-        for label, value in prov_rows:
-            st.markdown(f"**{label}:** {value}")
+        _provenance_table(model, T, q_hat, fao_all, seq_len)
 
-    # ── Saved figures gallery ─────────────────────────────────────────────────
-    with st.expander("Phase 4 Analysis Figures", expanded=False):
-        fig_files = sorted(FIGURES_DIR.glob("fig_04*.png")) if FIGURES_DIR.exists() else []
-        if fig_files:
-            cols = st.columns(3)
-            for i, fp in enumerate(fig_files):
-                cols[i % 3].image(str(fp), caption=fp.stem, use_container_width=True)
-        else:
-            st.info("No Phase 4 figures found. Run Phase 4 scripts first.")
+    with st.expander("Analysis Figures", expanded=False):
+        _figures_gallery()
 
-    # ── PDF export ────────────────────────────────────────────────────────────
     st.divider()
     st.subheader("Export")
     if st.button("Generate PDF report for selected week"):
