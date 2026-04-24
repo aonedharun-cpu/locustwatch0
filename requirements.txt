@@ -1,0 +1,48 @@
+# LocustWatch AI — Python dependencies
+# Install with: pip install -r requirements.txt
+#
+# Minimum Python version: 3.10
+
+# ── Core data science ─────────────────────────────────────────────────────────
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10
+
+# ── Geospatial ────────────────────────────────────────────────────────────────
+xarray>=2023.1
+netCDF4>=1.6
+rasterio>=1.3
+rioxarray>=0.14
+geopandas>=0.13
+pyproj>=3.5
+shapely>=2.0
+
+# ── Machine learning ──────────────────────────────────────────────────────────
+scikit-learn>=1.3
+xgboost>=1.7
+torch>=2.0
+torch-geometric>=2.3      # GNN layers (PyTorch Geometric)
+
+# ── Interpretability ─────────────────────────────────────────────────────────
+shap>=0.43
+
+# ── Data download ─────────────────────────────────────────────────────────────
+requests>=2.31
+cdsapi>=0.6               # Copernicus CDS API (ERA5)
+h5py>=3.9                 # SMAP HDF5 files
+pyhdf>=0.10               # MODIS HDF4 files (optional, needed for local HDF)
+
+# ── Dashboard ────────────────────────────────────────────────────────────────
+streamlit>=1.28
+folium>=0.15
+streamlit-folium>=0.15
+reportlab>=4.0            # PDF report generation
+
+# ── Visualisation ─────────────────────────────────────────────────────────────
+matplotlib>=3.7
+seaborn>=0.12
+
+# ── Utilities ────────────────────────────────────────────────────────────────
+pyyaml>=6.0               # config.yaml parsing
+tqdm>=4.65                # progress bars
+pyarrow>=13.0             # parquet I/O

@@ -1,0 +1,108 @@
+# LocustWatch AI — Central Configuration
+# Single source of truth for grid spec, paths, and hyperparameters.
+# All scripts import from here via: from configs.config import CFG
+
+# ── Grid ────────────────────────────────────────────────────────────────────
+grid:
+  resolution: 0.1          # degrees (~11 km per cell)
+  lat_min: -5.0
+  lat_max: 35.0
+  lon_min: -20.0
+  lon_max: 75.0
+  freq: "W-MON"            # weekly, Monday-anchored
+
+# ── Temporal splits ──────────────────────────────────────────────────────────
+splits:
+  train_end:  "2017-12-31"
+  val_start:  "2018-01-01"
+  val_end:    "2020-12-31"
+  test_start: "2021-01-01"
+
+# ── Data sources ─────────────────────────────────────────────────────────────
+data:
+  raw_dir:       "data/raw"
+  processed_dir: "data/processed"
+
+  fao:
+    raw_file:    "data/raw/fao/fao_locust_occurrences.csv"
+    clean_file:  "data/processed/fao_clean.parquet"
+
+  chirps:
+    raw_dir:     "data/raw/chirps"
+    clean_file:  "data/processed/chirps_weekly_0p1deg.parquet"
+    resolution:  0.05        # native CHIRPS resolution (degrees)
+
+  era5:
+    raw_dir:     "data/raw/era5"
+    clean_file:  "data/processed/era5_weekly_0p1deg.parquet"
+    variables:   ["2m_temperature", "10m_u_component_of_wind",
+                  "10m_v_component_of_wind", "2m_dewpoint_temperature"]
+
+  modis:
+    raw_dir:     "data/raw/modis"
+    clean_file:  "data/processed/modis_ndvi_weekly_0p1deg.parquet"
+    product:     "MOD13A2"   # 16-day NDVI at 1km
+    resolution:  0.01        # native resolution (degrees)
+
+  smap:
+    raw_dir:     "data/raw/smap"
+    clean_file:  "data/processed/smap_weekly_0p1deg.parquet"
+    product:     "SPL4SMGP"  # SMAP L4 9km global
+
+  features:
+    file:        "data/processed/features.parquet"
+
+# ── Feature engineering ───────────────────────────────────────────────────────
+features:
+  sequence_length: 12        # weeks of history per sample
+  forecast_horizon: 4        # weeks ahead to predict
+  label_window_days: 30      # outbreak within this many days = positive label
+  rolling_windows: [4, 8, 12]  # weeks for rolling rainfall sums
+  lag_weeks: [4, 8]          # lag offsets for climate variables
+  neighbours: 8              # Moore neighbourhood (8 surrounding cells)
+
+# ── Model ────────────────────────────────────────────────────────────────────
+model:
+  lstm:
+    hidden_size: 128
+    num_layers: 2
+    dropout: 0.3
+  attention:
+    num_heads: 4
+  gnn:
+    edge_type: "geographic"  # fixed Moore neighbourhood
+    hidden_size: 64
+  output:
+    binary_threshold: 0.5    # default decision threshold
+
+# ── Training ─────────────────────────────────────────────────────────────────
+training:
+  batch_size: 256
+  max_epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  patience: 10               # early stopping on val AUC-ROC
+  focal_loss_gamma: 2.0      # focal loss for class imbalance
+  seed: 42
+
+# ── Evaluation ───────────────────────────────────────────────────────────────
+evaluation:
+  metrics: ["auc_roc", "f1", "pr_auc", "brier_score"]
+  conformal_coverage: 0.80   # target coverage for prediction intervals
+
+# ── Outputs ──────────────────────────────────────────────────────────────────
+outputs:
+  figures_dir:     "outputs/figures"
+  reports_dir:     "outputs/reports"
+  checkpoints_dir: "outputs/checkpoints"
+  baseline_results: "outputs/baseline_results.csv"
+  best_model:      "outputs/checkpoints/best_model.pt"
+
+# ── Dashboard ────────────────────────────────────────────────────────────────
+dashboard:
+  risk_tiers:
+    watch:     0.30
+    warning:   0.60
+    emergency: 0.85
+  map_center: [15.0, 40.0]  # Horn of Africa
+  map_zoom: 4
