@@ -181,6 +181,15 @@ def run_inference_batch(model, feat_stats, feat_cols, df, seq_len, T=1.0):
     return result.reset_index(drop=True)
 
 
+def _prob_to_colour(prob: float) -> str:
+    """Map probability 0-1 to a hex colour via YlOrRd."""
+    import matplotlib.cm as cm
+    rgba = cm.YlOrRd(prob)
+    return "#{:02x}{:02x}{:02x}".format(
+        int(rgba[0] * 255), int(rgba[1] * 255), int(rgba[2] * 255)
+    )
+
+
 def build_folium_map(week_preds: pd.DataFrame, fao_week: pd.DataFrame,
                      show_fao: bool, show_uncertainty: bool) -> folium.Map:
     """Build a Folium map for a single week's predictions."""
@@ -190,12 +199,10 @@ def build_folium_map(week_preds: pd.DataFrame, fao_week: pd.DataFrame,
         tiles="CartoDB positron",
     )
 
-    # ── Risk cells ────────────────────────────────────────────────────────────
+    # ── Risk cells (show all, colour by probability) ──────────────────────────
     for _, row in week_preds.iterrows():
-        t = tier(row["risk_prob"])
-        if t == "none":
-            continue
-        colour = TIER_COLOURS[t]
+        t      = tier(row["risk_prob"])
+        colour = _prob_to_colour(row["risk_prob"])
         pct    = f"{row['risk_prob']*100:.1f}%"
         ci_lo  = max(0, row["risk_prob"] - 1.96 * row["risk_std"])
         ci_hi  = min(1, row["risk_prob"] + 1.96 * row["risk_std"])
@@ -204,10 +211,8 @@ def build_folium_map(week_preds: pd.DataFrame, fao_week: pd.DataFrame,
             f"95% CI: [{ci_lo*100:.1f}%, {ci_hi*100:.1f}%]<br>"
             f"Lat/Lon: {row['lat']:.2f}, {row['lon']:.2f}"
         )
-        if show_uncertainty:
-            radius = 5 + int(row["risk_std"] * 60)
-        else:
-            radius = 6
+        radius  = 5 + int(row["risk_std"] * 60) if show_uncertainty else 5
+        opacity = 0.3 + 0.7 * row["risk_prob"]  # low-risk cells are faint
 
         folium.CircleMarker(
             location=[row["lat"], row["lon"]],
@@ -215,7 +220,7 @@ def build_folium_map(week_preds: pd.DataFrame, fao_week: pd.DataFrame,
             color=colour,
             fill=True,
             fill_color=colour,
-            fill_opacity=0.75,
+            fill_opacity=opacity,
             weight=0,
             tooltip=folium.Tooltip(tooltip, sticky=False),
         ).add_to(m)
@@ -445,12 +450,6 @@ def static_mode(model, T, q_hat, fao_all):
 
         selected_week = available_weeks[week_idx]
         week_preds = preds[preds["week"] == selected_week].copy()
-
-        tier_order = {"none": 0, "watch": 1, "warning": 2, "emergency": 3}
-        min_val = tier_order[min_tier]
-        week_preds = week_preds[
-            week_preds["risk_prob"].apply(lambda p: tier_order[tier(p)] >= min_val)
-        ].copy()
 
         fao_week = pd.DataFrame()
         if not fao_all.empty and show_fao:
