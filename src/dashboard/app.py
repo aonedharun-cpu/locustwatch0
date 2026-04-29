@@ -50,6 +50,7 @@ FEATURES_FILE  = ROOT / "data/processed/features.parquet"
 FAO_FILE       = ROOT / "data/processed/fao_clean.parquet"
 SHAP_CSV       = ROOT / "outputs/shap_importance.csv"
 FIGURES_DIR    = ROOT / "outputs/figures"
+DEMO_PREDS     = ROOT / "outputs/demo_predictions.parquet"
 
 # ── Risk tier config ───────────────────────────────────────────────────────────
 RISK_TIERS = {"watch": 0.30, "warning": 0.60, "emergency": 0.85}
@@ -122,6 +123,15 @@ def load_features():
     if not FEATURES_FILE.exists():
         return pd.DataFrame()
     df = pd.read_parquet(FEATURES_FILE)
+    df["week"] = pd.to_datetime(df["week"])
+    return df
+
+
+@st.cache_data(show_spinner="Loading demo predictions...")
+def load_demo_preds():
+    if not DEMO_PREDS.exists():
+        return pd.DataFrame()
+    df = pd.read_parquet(DEMO_PREDS)
     df["week"] = pd.to_datetime(df["week"])
     return df
 
@@ -392,45 +402,88 @@ def _figures_gallery():
 
 def static_mode(model, T, q_hat, fao_all):
     """Dashboard shown on Streamlit Cloud where the 2GB features file is absent."""
-    st.info(
-        "Running in **demo mode** -- live inference requires the full feature matrix "
-        "(2.2 GB, not stored in the repo). "
-        "All pre-computed analysis figures and model metadata are shown below."
-    )
+    preds = load_demo_preds()
 
     with st.sidebar:
-        st.header("Demo Mode")
-        st.caption(
-            "To enable live inference, run the full pipeline locally and "
-            "launch: `python -m streamlit run src/dashboard/app.py`"
+        st.header("Controls")
+        show_fao         = st.checkbox("Show FAO records on map", value=True)
+        show_uncertainty = st.checkbox("Size circles by uncertainty", value=False)
+        min_tier = st.selectbox(
+            "Minimum tier on map",
+            options=["watch", "warning", "emergency"],
+            index=0,
         )
         st.divider()
+        st.info(
+            "Demo mode: pre-computed predictions (400 cells). "
+            "Run locally for full live inference."
+        )
         st.caption("LocustWatch AI v0.5 | Phase 5 Dashboard")
 
-    # KPI strip from conformal / calibration outputs
+    # KPI strip
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Model",         "LocustNet")
     col2.metric("Parameters",    "~317K")
     col3.metric("Calibration T", f"{T:.3f}")
     col4.metric("Conformal q",   f"{q_hat:.3f}" if q_hat else "N/A")
 
-    st.subheader("2019-2020 East Africa Outbreak -- Risk Maps")
-    risk_map = FIGURES_DIR / "fig_04f_risk_maps_2019_2020.png"
-    if risk_map.exists():
-        st.image(str(risk_map), use_container_width=True)
+    # ── Interactive map ───────────────────────────────────────────────────────
+    if not preds.empty:
+        st.subheader("Interactive Risk Map")
 
-    col_ts, col_fao = st.columns(2)
-    with col_ts:
+        available_weeks = sorted(preds["week"].unique())
+        week_labels = [str(pd.Timestamp(w).date()) for w in available_weeks]
+
+        col_map, col_ctrl = st.columns([3, 1])
+        with col_ctrl:
+            week_idx = st.select_slider(
+                "Select week",
+                options=list(range(len(available_weeks))),
+                value=len(available_weeks) - 1,
+                format_func=lambda i: week_labels[i],
+            )
+
+        selected_week = available_weeks[week_idx]
+        week_preds = preds[preds["week"] == selected_week].copy()
+
+        tier_order = {"none": 0, "watch": 1, "warning": 2, "emergency": 3}
+        min_val = tier_order[min_tier]
+        week_preds = week_preds[
+            week_preds["risk_prob"].apply(lambda p: tier_order[tier(p)] >= min_val)
+        ].copy()
+
+        fao_week = pd.DataFrame()
+        if not fao_all.empty and show_fao:
+            fao_week = fao_all[
+                (fao_all["week"] >= pd.Timestamp(selected_week) - pd.Timedelta(weeks=2)) &
+                (fao_all["week"] <= pd.Timestamp(selected_week) + pd.Timedelta(weeks=2))
+            ].copy()
+
+        t_counts = week_preds["risk_prob"].apply(tier).value_counts()
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("Cells",     f"{len(week_preds):,}")
+        k2.metric("Watch",     f"{t_counts.get('watch', 0):,}")
+        k3.metric("Warning",   f"{t_counts.get('warning', 0):,}")
+        k4.metric("Emergency", f"{t_counts.get('emergency', 0):,}")
+        k5.metric("Mean risk", f"{week_preds['risk_prob'].mean()*100:.1f}%" if len(week_preds) else "N/A")
+
+        with col_map:
+            folium_map = build_folium_map(week_preds, fao_week, show_fao, show_uncertainty)
+            st_folium(folium_map, width=None, height=480, returned_objects=[])
+
+        # Time series
         st.subheader("Regional Risk Time Series")
-        ts_fig = FIGURES_DIR / "fig_04g_risk_timeseries.png"
-        if ts_fig.exists():
-            st.image(str(ts_fig), use_container_width=True)
-    with col_fao:
-        st.subheader("Predicted Risk vs FAO Records")
-        fao_fig = FIGURES_DIR / "fig_04h_fao_vs_predicted.png"
-        if fao_fig.exists():
-            st.image(str(fao_fig), use_container_width=True)
+        ts_fig = fig_timeseries(preds)
+        st.pyplot(ts_fig, use_container_width=True)
+        plt.close(ts_fig)
 
+    else:
+        st.warning("Demo predictions not found. Run: python scripts/export_demo_predictions.py")
+        risk_map = FIGURES_DIR / "fig_04f_risk_maps_2019_2020.png"
+        if risk_map.exists():
+            st.image(str(risk_map), use_container_width=True)
+
+    # SHAP + provenance
     col_shap, col_prov = st.columns([3, 2])
     with col_shap:
         st.subheader("Feature Importance (SHAP)")
